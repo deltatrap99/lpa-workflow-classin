@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server";
-import puppeteer from "puppeteer";
+import chromium from "@sparticuz/chromium";
+import puppeteer from "puppeteer-core";
+
+// Vercel serverless functions default config
+export const maxDuration = 30; // Max execution time for Vercel Hobby
 
 export async function POST(req: Request) {
   let browser;
@@ -10,16 +14,17 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: false, error: "Invalid URL provided." }, { status: 400 });
     }
 
-    // Launch puppeteer to fully render the client-side app
+    // Launch puppeteer optimized for serverless functions
     browser = await puppeteer.launch({
-      headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox']
+      args: chromium.args,
+      defaultViewport: chromium.defaultViewport,
+      executablePath: await chromium.executablePath(),
+      headless: chromium.headless,
     });
     
     const page = await browser.newPage();
     let videoUrl: string | null = null;
 
-    // Listen to network responses to catch media URLs, API payloads, or standard mp4 files
     page.on('response', async (response) => {
       const respUrl = response.url();
       if ((respUrl.includes('.mp4') || respUrl.includes('.m3u8')) && !videoUrl) {
@@ -27,10 +32,8 @@ export async function POST(req: Request) {
       }
     });
 
-    // Wait until network is mostly idle to ensure JS has run
-    await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 25000 });
 
-    // Fallback: If not caught by intercept, look inside the DOM for <video>
     if (!videoUrl) {
       videoUrl = await page.evaluate(() => {
         const video = document.querySelector('video');
@@ -39,14 +42,6 @@ export async function POST(req: Request) {
         const source = document.querySelector('video source');
         if (source && (source as HTMLSourceElement).src) return (source as HTMLSourceElement).src;
         
-        return null;
-      });
-    }
-
-    // Try finding via window variables if it's an eeo classin page
-    if (!videoUrl) {
-      videoUrl = await page.evaluate(() => {
-        // Sometimes React apps window state holds the playback URL
         const html = document.body.innerHTML;
         const mp4Match = html.match(/https?:\/\/[^\s"'<>]+\.mp4/);
         return mp4Match ? mp4Match[0] : null;
@@ -59,7 +54,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: true, videoUrl });
     } else {
       return NextResponse.json(
-        { success: false, error: "No video link found on the provided page. The video might be protected, requires login, or uses a different format." },
+        { success: false, error: "No video link found on the provided page. The video might be protected." },
         { status: 404 }
       );
     }
@@ -67,7 +62,7 @@ export async function POST(req: Request) {
     if (browser) await browser.close();
     console.error("Puppeteer Scraper Error:", error.message);
     return NextResponse.json(
-      { success: false, error: "Failed to fetch the URL due to an internal scraper error or timeout." },
+      { success: false, error: "Failed to fetch the URL. Serverless function might have timed out." },
       { status: 500 }
     );
   }
